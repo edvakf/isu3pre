@@ -336,7 +336,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 			rows.Scan(&totalCount)
 		}
 		rows.Close()
-		gocache.Set("public_memo_count", totalCount, 1*time.Second)
+		gocache.Set("public_memo_count", totalCount, 30*time.Second)
 	}
 	memos := make(Memos, 0)
 	stmtUser, err := dbConn.Prepare("SELECT username FROM users WHERE id=?")
@@ -609,6 +609,7 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("is_private") == "1" {
 		isPrivate = 1
 	} else {
+		gocache.Increment("public_memo_count", 1)
 		isPrivate = 0
 	}
 	result, err := dbConn.Exec(
