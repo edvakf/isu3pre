@@ -347,7 +347,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			serverError(w, err)
 		}
-		gocache.Set("public_memo_count", totalCount, 1*time.Second)
+		gocache.Set("public_memo_count", totalCount, 30*time.Second)
 	}
 
 	if len(memos) == 0 {
@@ -698,7 +698,6 @@ func migrateToRedis() error {
 	cursor := 0
 	r.Do("FLUSHDB")
 	for {
-		fmt.Printf("ok\n")
 		rows, err := dbConn.Query("SELECT * FROM memos WHERE id > ? ORDER BY id ASC LIMIT 2000", cursor)
 		if err != nil {
 			return err
@@ -721,7 +720,6 @@ func migrateToRedis() error {
 		if rowsCount < 1000 {
 			break
 		}
-		fmt.Printf("%+v\n", rows)
 		cursor += 1000
 		rows.Close()
 	}
