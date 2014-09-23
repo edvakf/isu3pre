@@ -318,7 +318,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	page, _ := strconv.Atoi(vars["page"])
 
-	rows, err := dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", memosPerPage, memosPerPage*page)
+	rows, err := dbConn.Query("SELECT * FROM public_memos ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", memosPerPage, memosPerPage*page)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -330,7 +330,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 		totalCount = x.(int)
 	} else {
 		// fmt.Println("NO HIT")
-		rows, err := dbConn.Query("SELECT count(*) AS c FROM memos WHERE is_private=0")
+		rows, err := dbConn.Query("SELECT count(*) AS c FROM public_memos")
 		if err != nil {
 			serverError(w, err)
 			return
@@ -644,5 +644,12 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newId, _ := result.LastInsertId()
+	if isPrivate == 0 {
+		_, err := dbConn.Exec("INSERT INTO public_memos SELECT * FROM memos WHERE id = ?", newId)
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+	}
 	http.Redirect(w, r, fmt.Sprintf("/memo/%d", newId), http.StatusFound)
 }
