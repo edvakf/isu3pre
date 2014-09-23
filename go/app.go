@@ -106,6 +106,7 @@ var port = flag.Uint("port", 0, "port to listen")
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
+	flag.Parse()
 
 	env := os.Getenv("ISUCON_ENV")
 	if env == "" {
