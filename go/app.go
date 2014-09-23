@@ -383,7 +383,39 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 func initHandler(w http.ResponseWriter, r *http.Request) {
 	gocache.Flush()
 
+	err := initNames()
+	if err != nil {
+		serverError(w, err)
+	}
+
 	w.Write([]byte("ok"))
+}
+
+var names [500]string
+
+func initNames() error {
+	dbConn := <-dbConnPool
+	defer func() {
+		dbConnPool <- dbConn
+	}()
+
+	rows, err := dbConn.Query("SELECT id, username FROM users ORDER BY id ASC")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var Id int
+		var Name string
+		rows.Scan(&Id, &Name)
+		log.Printf("%d\t%s", Id, Name)
+		names[Id] = Name
+	}
+	rows.Close()
+	return nil
+}
+
+func getUserName(id int) string {
+	return names[id]
 }
 
 func signinHandler(w http.ResponseWriter, r *http.Request) {
