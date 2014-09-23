@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"./sessions"
+	"github.com/garyburd/redigo/redis"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/securecookie"
@@ -133,6 +134,10 @@ func main() {
 		defer conn.Close()
 	}
 
+	err := migrateToRedis()
+	if err != nil {
+		panic(err)
+	}
 	r := mux.NewRouter()
 	r.HandleFunc("/", topHandler)
 	r.HandleFunc("/signin", signinHandler).Methods("GET", "HEAD")
@@ -151,7 +156,7 @@ func main() {
 	signal.Notify(sigchan, syscall.SIGINT)
 
 	var l net.Listener
-	var err error
+	// var err error
 	if *port == 0 {
 		ferr := os.Remove("/tmp/server.sock")
 		if ferr != nil {
@@ -258,35 +263,27 @@ func topHandler(w http.ResponseWriter, r *http.Request) {
 	user := getUser(w, r, dbConn, session)
 
 	var totalCount int
-	rows, err := dbConn.Query("SELECT count(*) AS c FROM memos WHERE is_private=0")
+	rdb, err := connectRedis()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	if rows.Next() {
-		rows.Scan(&totalCount)
+	totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
+	if err != nil {
+		serverError(w, err)
+		return
 	}
-	rows.Close()
 
-	rows, err = dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY created_at DESC, id DESC LIMIT ?", memosPerPage)
+	memoIds, err := redis.Strings(rdb.Do("LRANGE", "public_memo_list", 0, memosPerPage-1))
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	memos := make(Memos, 0)
-	stmtUser, err := dbConn.Prepare("SELECT username FROM users WHERE id=?")
-	defer stmtUser.Close()
+	memos, err := lookupMemoMulti(memoIds)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	for rows.Next() {
-		memo := Memo{}
-		rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
-		stmtUser.QueryRow(memo.User).Scan(&memo.Username)
-		memos = append(memos, &memo)
-	}
-	rows.Close()
 
 	v := &View{
 		Total:     totalCount,
@@ -317,40 +314,39 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	page, _ := strconv.Atoi(vars["page"])
 
-	rows, err := dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", memosPerPage, memosPerPage*page)
+	rdb, err := connectRedis()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
+	memoIds, err := redis.Strings(rdb.Do("LRANGE", "public_memo_list", memosPerPage*page, memosPerPage*(page+1)-1))
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	memos, err := lookupMemoMulti(memoIds)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+
 	var totalCount int
 	x, found := gocache.Get("public_memo_count")
 	if found {
 		totalCount = x.(int)
 	} else {
-		rows, err := dbConn.Query("SELECT count(*) AS c FROM memos WHERE is_private=0")
+		rdb, err := connectRedis()
 		if err != nil {
 			serverError(w, err)
 			return
 		}
-		if rows.Next() {
-			rows.Scan(&totalCount)
+		totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
+		if err != nil {
+			serverError(w, err)
 		}
-		rows.Close()
 		gocache.Set("public_memo_count", totalCount, 1*time.Second)
 	}
-	memos := make(Memos, 0)
-	stmtUser, err := dbConn.Prepare("SELECT username FROM users WHERE id=?")
-	defer stmtUser.Close()
-	if err != nil {
-		serverError(w, err)
-		return
-	}
-	for rows.Next() {
-		memo := Memo{}
-		rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
-		stmtUser.QueryRow(memo.User).Scan(&memo.Username)
-		memos = append(memos, &memo)
-	}
+
 	if len(memos) == 0 {
 		notFound(w)
 		return
@@ -620,5 +616,139 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newId, _ := result.LastInsertId()
+	rdb, err := connectRedis()
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	rdb.Send("MULTI")
+	rdb.Send("LPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
+	if isPrivate == 0 {
+		rdb.Send("LPUSH", "public_memo_list", newId)
+	}
+	_, err = rdb.Do("EXEC")
+	if err != nil {
+		fmt.Errorf(err.Error())
+	}
 	http.Redirect(w, r, fmt.Sprintf("/memo/%d", newId), http.StatusFound)
+}
+
+func connectRedis() (redis.Conn, error) {
+	c, err := redis.Dial("tcp", ":6379")
+	return c, err
+}
+
+func migrateToRedis() error {
+	r, err := connectRedis()
+	if err != nil {
+		panic(err)
+	}
+	dbConn := <-dbConnPool
+	defer func() {
+		dbConnPool <- dbConn
+	}()
+
+	cursor := 0
+	r.Do("FLUSHDB")
+	for {
+		fmt.Printf("ok\n")
+		rows, err := dbConn.Query("SELECT * FROM memos WHERE id > ? ORDER BY id ASC LIMIT 2000", cursor)
+		if err != nil {
+			return err
+		}
+		r.Send("MULTI")
+		rowsCount := 0
+		for rows.Next() {
+			memo := Memo{}
+			rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
+			if memo.IsPrivate == 0 {
+				r.Send("LPUSH", "public_memo_list", memo.Id)
+			}
+			r.Send("LPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
+			rowsCount++
+		}
+		_, err = r.Do("EXEC")
+		if err != nil {
+			fmt.Errorf(err.Error())
+		}
+		if rowsCount < 1000 {
+			break
+		}
+		fmt.Printf("%+v\n", rows)
+		cursor += 1000
+		rows.Close()
+	}
+
+	return nil
+}
+
+func lookupMemoMulti(memoIds []string) (Memos, error) {
+	memos := make(Memos, 0)
+	dbConn := <-dbConnPool
+	defer func() {
+		dbConnPool <- dbConn
+	}()
+	placeHolder := "0"
+	args := []interface{}{}
+	for _, id := range memoIds {
+		placeHolder += ",?"
+		args = append(args, id)
+	}
+	rows, err := dbConn.Query("SELECT * FROM memos WHERE id IN ("+placeHolder+")", args...)
+	defer rows.Close()
+	if err != nil {
+		return memos, err
+	}
+
+	stmtUser, err := dbConn.Prepare("SELECT username FROM users WHERE id=?")
+	defer stmtUser.Close()
+	if err != nil {
+		return memos, err
+	}
+
+	userIds := []int{}
+	for rows.Next() {
+		memo := Memo{}
+		rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
+		userIds = append(userIds, memo.User)
+		stmtUser.QueryRow(memo.User).Scan(&memo.Username)
+		memos = append(memos, &memo)
+	}
+	usernameOf, err := lookupUserNameMulti(userIds)
+	if err != nil {
+		return memos, nil
+	}
+	for _, memo := range memos {
+		if v, found := usernameOf[memo.User]; found {
+			memo.Username = v
+		}
+	}
+	return memos, nil
+}
+
+func lookupUserNameMulti(userIds []int) (map[int]string, error) {
+	dbConn := <-dbConnPool
+	defer func() {
+		dbConnPool <- dbConn
+	}()
+
+	usernameOf := map[int]string{}
+	placeHolder := "0"
+	args := []interface{}{}
+	for _, id := range userIds {
+		placeHolder += ",?"
+		args = append(args, id)
+	}
+	rows, err := dbConn.Query("SELECT id, username FROM users WHERE id IN ("+placeHolder+")", args...)
+	if err != nil {
+		return usernameOf, err
+	}
+	for rows.Next() {
+		username := ""
+		id := 0
+		rows.Scan(&id, &username)
+		usernameOf[id] = username
+	}
+	rows.Close()
+	return usernameOf, err
 }
