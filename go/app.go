@@ -774,21 +774,11 @@ func lookupMemoMulti(dbConn *sql.DB, memoIds []string) (Memos, error) {
 		return memos, err
 	}
 
-	userIds := []int{}
 	for rows.Next() {
 		memo := Memo{}
 		rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
-		userIds = append(userIds, memo.User)
+		memo.Username = getUserName(memo.User)
 		memos = append(memos, &memo)
-	}
-	usernameOf, err := lookupUserNameMulti(dbConn, userIds)
-	if err != nil {
-		return memos, nil
-	}
-	for _, memo := range memos {
-		if v, found := usernameOf[memo.User]; found {
-			memo.Username = v
-		}
 	}
 	return memos, nil
 }
