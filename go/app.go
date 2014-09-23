@@ -585,15 +585,7 @@ func memoHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	rows, err = dbConn.Query("SELECT username FROM users WHERE id=?", memo.User)
-	if err != nil {
-		serverError(w, err)
-		return
-	}
-	if rows.Next() {
-		rows.Scan(&memo.Username)
-		rows.Close()
-	}
+	memo.Username = getUserName(memo.User)
 
 	var cond string
 	if user != nil && user.Id == memo.User {
