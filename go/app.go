@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -98,6 +100,10 @@ var (
 			return session.Values["token"]
 		},
 		"gen_markdown": func(s string) template.HTML {
+			h, found := getHTML(s)
+			if found {
+				return h
+			}
 			out := blackfriday.MarkdownCommon([]byte(s))
 			return template.HTML(out)
 		},
@@ -717,6 +723,7 @@ func migrateToRedis() error {
 			}
 			r.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
 			rowsCount++
+			go cacheHTML(memo.Content)
 		}
 		_, err = r.Do("EXEC")
 		if err != nil {
@@ -730,6 +737,26 @@ func migrateToRedis() error {
 	}
 
 	return nil
+}
+
+func mdCacheKye(md string) string {
+	h := md5.New()
+	io.WriteString(h, md)
+	return string(h.Sum(nil))
+}
+
+func cacheHTML(md string) {
+	out := blackfriday.MarkdownCommon([]byte(md))
+	gocache.Set(mdCacheKye(md), template.HTML(out), 10000*time.Second)
+}
+
+func getHTML(md string) (template.HTML, bool) {
+	cache, found := gocache.Get(mdCacheKye(md))
+	if !found {
+		log.Printf("HTML cache not found")
+		return "", false
+	}
+	return cache.(template.HTML), true
 }
 
 func lookupMemoMulti(dbConn *sql.DB, memoIds []string) (Memos, error) {
