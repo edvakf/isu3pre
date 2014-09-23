@@ -320,6 +320,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
+	defer rdb.Close()
 	memoIds, err := redis.Strings(rdb.Do("LRANGE", "public_memo_list", memosPerPage*page, memosPerPage*(page+1)-1))
 	if err != nil {
 		serverError(w, err)
@@ -336,11 +337,6 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	if found {
 		totalCount = x.(int)
 	} else {
-		rdb, err := connectRedis()
-		if err != nil {
-			serverError(w, err)
-			return
-		}
 		totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
 		if err != nil {
 			serverError(w, err)
