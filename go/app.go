@@ -685,6 +685,7 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 	rdb.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
 	if isPrivate == 0 {
 		rdb.Send("LPUSH", "public_memo_list", newId)
+		rdb.Send("LPUSH", fmt.Sprintf("user_public_memo_list:%d", user.Id), newId)
 	}
 	_, err = rdb.Do("EXEC")
 	if err != nil {
@@ -723,6 +724,7 @@ func migrateToRedis() error {
 			rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
 			if memo.IsPrivate == 0 {
 				r.Send("LPUSH", "public_memo_list", memo.Id)
+				r.Send("RPUSH", fmt.Sprintf("user_public_memo_list:%d", memo.User), memo.Id)
 			}
 			r.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
 			rowsCount++
