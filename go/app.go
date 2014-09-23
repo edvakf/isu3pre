@@ -403,7 +403,7 @@ func initNames() error {
 		var Id int
 		var Name string
 		rows.Scan(&Id, &Name)
-		log.Printf("%d\t%s", Id, Name)
+		//log.Printf("%d\t%s", Id, Name)
 		names[Id] = Name
 	}
 	rows.Close()
@@ -601,9 +601,8 @@ func memoHandler(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	log.Printf("%+v", memoIds)
-	var olderID string
-	var newerID string
+	olderID := ""
+	newerID := ""
 	for i, m := range memoIds {
 		if m == strconv.Itoa(memo.Id) {
 			if i > 0 {
@@ -614,7 +613,6 @@ func memoHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	log.Printf("%d\t%s\t%s\t%+v", memo.Id, olderID, newerID, memoIds)
 	memos, err = lookupMemoMulti(dbConn, []string{olderID, newerID})
 	if err != nil {
 		serverError(w, err)
@@ -688,7 +686,7 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 	rdb.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
 	if isPrivate == 0 {
 		rdb.Send("LPUSH", "public_memo_list", newId)
-		rdb.Send("LPUSH", fmt.Sprintf("user_public_memo_list:%d", user.Id), newId)
+		rdb.Send("RPUSH", fmt.Sprintf("user_public_memo_list:%d", user.Id), newId)
 	}
 	_, err = rdb.Do("EXEC")
 	if err != nil {
@@ -713,36 +711,33 @@ func migrateToRedis() error {
 		dbConnPool <- dbConn
 	}()
 
-	cursor := 0
-	r.Do("FLUSHDB")
-	for {
-		rows, err := dbConn.Query("SELECT * FROM memos WHERE id > ? ORDER BY id ASC LIMIT 2000", cursor)
-		if err != nil {
-			return err
-		}
-		r.Send("MULTI")
-		rowsCount := 0
-		for rows.Next() {
-			memo := Memo{}
-			rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
-			if memo.IsPrivate == 0 {
-				r.Send("LPUSH", "public_memo_list", memo.Id)
-				r.Send("RPUSH", fmt.Sprintf("user_public_memo_list:%d", memo.User), memo.Id)
-			}
-			r.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
-			rowsCount++
-			go cacheHTML(memo.Content)
-		}
-		_, err = r.Do("EXEC")
+	_, err = r.Do("FLUSHDB")
+	if err != nil {
+		fmt.Errorf(err.Error())
+	}
+	rows, err := dbConn.Query("SELECT * FROM memos ORDER BY id ASC")
+	if err != nil {
+		return err
+	}
+	r.Send("MULTI")
+	for rows.Next() {
+		memo := Memo{}
+		err = rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
 		if err != nil {
 			fmt.Errorf(err.Error())
 		}
-		if rowsCount < 1000 {
-			break
+		if memo.IsPrivate == 0 {
+			r.Send("LPUSH", "public_memo_list", memo.Id)
+			r.Send("RPUSH", fmt.Sprintf("user_public_memo_list:%d", memo.User), memo.Id)
 		}
-		cursor += 1000
-		rows.Close()
+		r.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
+		go cacheHTML(memo.Content)
 	}
+	_, err = r.Do("EXEC")
+	if err != nil {
+		fmt.Errorf(err.Error())
+	}
+	rows.Close()
 
 	return nil
 }
@@ -772,8 +767,14 @@ func lookupMemoMulti(dbConn *sql.DB, memoIds []string) (Memos, error) {
 	placeHolder := "0"
 	args := []interface{}{}
 	for _, id := range memoIds {
+		if id == "" {
+			continue
+		}
 		placeHolder += "," + id
 		args = append(args, id)
+	}
+	if placeHolder == "0" {
+		return memos, nil
 	}
 	rows, err := dbConn.Query("SELECT * FROM memos WHERE id IN (" + placeHolder + ")")
 	defer rows.Close()
