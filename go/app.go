@@ -269,7 +269,7 @@ func topHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 
-	rows, err = dbConn.Query("SELECT * FROM public_memos ORDER BY created_at DESC, id DESC LIMIT ?", memosPerPage)
+	rows, err = dbConn.Query("SELECT * FROM public_memos ORDER BY id DESC LIMIT ?", memosPerPage)
 	if err != nil {
 		serverError(w, err)
 		return
