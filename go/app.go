@@ -265,7 +265,7 @@ func topHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 
-	rows, err = dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY id DESC LIMIT ?", memosPerPage)
+	rows, err = dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY created_at DESC, id DESC LIMIT ?", memosPerPage)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -325,7 +325,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 
-	rows, err = dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY id DESC LIMIT ? OFFSET ?", memosPerPage, memosPerPage*page)
+	rows, err = dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", memosPerPage, memosPerPage*page)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -469,7 +469,7 @@ func mypageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	rows, err := dbConn.Query("SELECT id, content, is_private, created_at, updated_at FROM memos WHERE user=? ORDER BY id DESC", user.Id)
+	rows, err := dbConn.Query("SELECT id, content, is_private, created_at, updated_at FROM memos WHERE user=? ORDER BY created_at DESC", user.Id)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -540,7 +540,7 @@ func memoHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		cond = "AND is_private=0"
 	}
-	rows, err = dbConn.Query("SELECT id, content, is_private, created_at, updated_at FROM memos WHERE user=? "+cond+" ORDER BY id", memo.User)
+	rows, err = dbConn.Query("SELECT id, content, is_private, created_at, updated_at FROM memos WHERE user=? "+cond+" ORDER BY created_at", memo.User)
 	if err != nil {
 		serverError(w, err)
 		return
