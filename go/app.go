@@ -259,17 +259,24 @@ func topHandler(w http.ResponseWriter, r *http.Request) {
 	user := getUser(w, r, dbConn, session)
 
 	var totalCount int
-	rows, err := dbConn.Query("SELECT count(*) AS c FROM memos WHERE is_private=0")
-	if err != nil {
-		serverError(w, err)
-		return
+	x, found := gocache.Get("public_memo_count")
+	if found {
+		// fmt.Println("HIT")
+		totalCount = x.(int)
+	} else {
+		// fmt.Println("NO HIT")
+		rows, err := dbConn.Query("SELECT count(*) AS c FROM memos WHERE is_private=0")
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		if rows.Next() {
+			rows.Scan(&totalCount)
+		}
+		rows.Close()
+		gocache.Set("public_memo_count", totalCount, 30*time.Second)
 	}
-	if rows.Next() {
-		rows.Scan(&totalCount)
-	}
-	rows.Close()
-
-	rows, err = dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY created_at DESC, id DESC LIMIT ?", memosPerPage)
+	rows, err := dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY created_at DESC, id DESC LIMIT ?", memosPerPage)
 	if err != nil {
 		serverError(w, err)
 		return
