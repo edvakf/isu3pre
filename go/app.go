@@ -584,47 +584,50 @@ func memoHandler(w http.ResponseWriter, r *http.Request) {
 	memo.Username = getUserName(memo.User)
 
 	memos := make(Memos, 0)
+	var key string
 	if user != nil && user.Id == memo.User {
-		rdb, err := connectRedis()
-		defer rdb.Close()
-		if err != nil {
-			serverError(w, err)
-			return
-		}
-		memoIds, err := redis.Strings(rdb.Do("LRANGE", fmt.Sprintf("user_memo_list:%d", user.Id), 0, -1))
-		if err != nil {
-			serverError(w, err)
-			return
-		}
-		memos, err = lookupMemoMulti(dbConn, memoIds)
-		if err != nil {
-			serverError(w, err)
-			return
-		}
+		key = fmt.Sprintf("user_memo_list:%d", memo.User)
 	} else {
-		cond := "AND is_private=0"
-		rows, err = dbConn.Query("SELECT id, content, is_private, created_at, updated_at FROM memos WHERE user=? "+cond+" ORDER BY created_at", memo.User)
-		if err != nil {
-			serverError(w, err)
-			return
+		key = fmt.Sprintf("user_public_memo_list:%d", memo.User)
+	}
+	rdb, err := connectRedis()
+	defer rdb.Close()
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	memoIds, err := redis.Strings(rdb.Do("LRANGE", key, 0, -1))
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	log.Printf("%+v", memoIds)
+	var olderID string
+	var newerID string
+	for i, m := range memoIds {
+		if m == strconv.Itoa(memo.Id) {
+			if i > 0 {
+				olderID = memoIds[i-1]
+			}
+			if i < len(memoIds)-1 {
+				newerID = memoIds[i+1]
+			}
 		}
-		for rows.Next() {
-			m := Memo{}
-			rows.Scan(&m.Id, &m.Content, &m.IsPrivate, &m.CreatedAt, &m.UpdatedAt)
-			memos = append(memos, &m)
-		}
-		rows.Close()
+	}
+	log.Printf("%d\t%s\t%s\t%+v", memo.Id, olderID, newerID, memoIds)
+	memos, err = lookupMemoMulti(dbConn, []string{olderID, newerID})
+	if err != nil {
+		serverError(w, err)
+		return
 	}
 	var older *Memo
 	var newer *Memo
-	for i, m := range memos {
-		if m.Id == memo.Id {
-			if i > 0 {
-				older = memos[i-1]
-			}
-			if i < len(memos)-1 {
-				newer = memos[i+1]
-			}
+	for _, memo := range memos {
+		if strconv.Itoa(memo.Id) == olderID {
+			older = memo
+		}
+		if strconv.Itoa(memo.Id) == newerID {
+			newer = memo
 		}
 	}
 
@@ -685,6 +688,7 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 	rdb.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
 	if isPrivate == 0 {
 		rdb.Send("LPUSH", "public_memo_list", newId)
+		rdb.Send("LPUSH", fmt.Sprintf("user_public_memo_list:%d", user.Id), newId)
 	}
 	_, err = rdb.Do("EXEC")
 	if err != nil {
@@ -723,6 +727,7 @@ func migrateToRedis() error {
 			rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
 			if memo.IsPrivate == 0 {
 				r.Send("LPUSH", "public_memo_list", memo.Id)
+				r.Send("RPUSH", fmt.Sprintf("user_public_memo_list:%d", memo.User), memo.Id)
 			}
 			r.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
 			rowsCount++
