@@ -36,7 +36,7 @@ const (
 	sessionName        = "isucon_session"
 	tmpDir             = "/tmp/"
 	dbConnPoolSize     = 10
-	memcachedServer    = "localhost:11211"
+	memcachedServer    = "localhost:11212"
 	sessionSecret      = "kH<{11qpic*gf0e21YK7YtwyUvE9l<1r>yX8R-Op"
 )
 
@@ -147,6 +147,7 @@ func main() {
 	r.HandleFunc("/memo/{memo_id}", memoHandler).Methods("GET", "HEAD")
 	r.HandleFunc("/memo", memoPostHandler).Methods("POST")
 	r.HandleFunc("/recent/{page:[0-9]+}", recentHandler)
+	r.HandleFunc("/init", initHandler)
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./public/")))
 	http.Handle("/", r)
 
@@ -269,16 +270,20 @@ func topHandler(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
-	if err != nil {
-		serverError(w, err)
-		return
-	}
 
 	memoIds, err := redis.Strings(rdb.Do("LRANGE", "public_memo_list", 0, memosPerPage-1))
-	if err != nil {
-		serverError(w, err)
-		return
+	x, found := gocache.Get("public_memo_count")
+	if found {
+		// fmt.Println("HIT")
+		totalCount = x.(int)
+	} else {
+		// fmt.Println("NO HIT")
+		totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		gocache.Set("public_memo_count", totalCount, 30*time.Second)
 	}
 	memos, err := lookupMemoMulti(dbConn, memoIds)
 	if err != nil {
@@ -335,6 +340,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	var totalCount int
 	x, found := gocache.Get("public_memo_count")
 	if found {
+		// fmt.Println("HIT")
 		totalCount = x.(int)
 	} else {
 		totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
@@ -361,6 +367,49 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	if err = tmpl.ExecuteTemplate(w, "index", v); err != nil {
 		serverError(w, err)
 	}
+}
+
+func initHandler(w http.ResponseWriter, r *http.Request) {
+	gocache.Flush()
+
+	err := initNames()
+	if err != nil {
+		serverError(w, err)
+	}
+
+	err = migrateToRedis()
+	if err != nil {
+		serverError(w, err)
+	}
+
+	w.Write([]byte("ok"))
+}
+
+var names [500]string
+
+func initNames() error {
+	dbConn := <-dbConnPool
+	defer func() {
+		dbConnPool <- dbConn
+	}()
+
+	rows, err := dbConn.Query("SELECT id, username FROM users ORDER BY id ASC")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var Id int
+		var Name string
+		rows.Scan(&Id, &Name)
+		log.Printf("%d\t%s", Id, Name)
+		names[Id] = Name
+	}
+	rows.Close()
+	return nil
+}
+
+func getUserName(id int) string {
+	return names[id]
 }
 
 func signinHandler(w http.ResponseWriter, r *http.Request) {
@@ -602,6 +651,7 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("is_private") == "1" {
 		isPrivate = 1
 	} else {
+		gocache.Increment("public_memo_count", 1)
 		isPrivate = 0
 	}
 	result, err := dbConn.Exec(
