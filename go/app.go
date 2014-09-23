@@ -318,7 +318,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	page, _ := strconv.Atoi(vars["page"])
 
-	rows, err := dbConn.Query("SELECT * FROM public_memos ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", memosPerPage, memosPerPage*page)
+	rows, err := dbConn.Query("SELECT * FROM public_memos ORDER BY id DESC LIMIT ? OFFSET ?", memosPerPage, memosPerPage*page)
 	if err != nil {
 		serverError(w, err)
 		return
