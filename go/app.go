@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"./sessions"
-	"github.com/garyburd/redigo/redis"
+	Radix "github.com/fzzy/radix/extra/pool"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/securecookie"
@@ -108,7 +108,8 @@ var (
 			return template.HTML(out)
 		},
 	}
-	tmpl = template.Must(template.New("tmpl").Funcs(fmap).ParseGlob("templates/*.html"))
+	tmpl  = template.Must(template.New("tmpl").Funcs(fmap).ParseGlob("templates/*.html"))
+	radix *Radix.Pool
 )
 
 var port = flag.Uint("port", 0, "port to listen")
@@ -140,6 +141,12 @@ func main() {
 		defer conn.Close()
 	}
 
+	var err error
+	radix, err = Radix.NewPool("tcp", ":6379", 1024)
+	if err != nil {
+		log.Panicf("error initializing redis: %s", err.Error())
+	}
+
 	r := mux.NewRouter()
 	r.HandleFunc("/", topHandler)
 	r.HandleFunc("/signin", signinHandler).Methods("GET", "HEAD")
@@ -159,7 +166,6 @@ func main() {
 	signal.Notify(sigchan, syscall.SIGINT)
 
 	var l net.Listener
-	var err error
 	if *port == 0 {
 		ferr := os.Remove("/tmp/server.sock")
 		if ferr != nil {
@@ -266,21 +272,21 @@ func topHandler(w http.ResponseWriter, r *http.Request) {
 	user := getUser(w, r, dbConn, session)
 
 	var totalCount int
-	rdb, err := connectRedis()
-	defer rdb.Close()
+	rdb, err := radix.Get()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
+	defer radix.Put(rdb)
 
-	memoIds, err := redis.Strings(rdb.Do("LRANGE", "public_memo_list", 0, memosPerPage-1))
+	memoIds, err := rdb.Cmd("LRANGE", "public_memo_list", 0, memosPerPage-1).List()
 	x, found := gocache.Get("public_memo_count")
 	if found {
 		// fmt.Println("HIT")
 		totalCount = x.(int)
 	} else {
 		// fmt.Println("NO HIT")
-		totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
+		totalCount, err = rdb.Cmd("LLEN", "public_memo_list").Int()
 		if err != nil {
 			serverError(w, err)
 			return
@@ -322,13 +328,13 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	page, _ := strconv.Atoi(vars["page"])
 
-	rdb, err := connectRedis()
+	rdb, err := radix.Get()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	defer rdb.Close()
-	memoIds, err := redis.Strings(rdb.Do("LRANGE", "public_memo_list", memosPerPage*page, memosPerPage*(page+1)-1))
+	defer radix.Put(rdb)
+	memoIds, err := rdb.Cmd("LRANGE", "public_memo_list", memosPerPage*page, memosPerPage*(page+1)-1).List()
 	if err != nil {
 		serverError(w, err)
 		return
@@ -345,7 +351,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 		// fmt.Println("HIT")
 		totalCount = x.(int)
 	} else {
-		totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
+		totalCount, err = rdb.Cmd("LLEN", "public_memo_list").Int()
 		if err != nil {
 			serverError(w, err)
 		}
@@ -521,13 +527,13 @@ func mypageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	rdb, err := connectRedis()
+	rdb, err := radix.Get()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	defer rdb.Close()
-	memoIds, err := redis.Strings(rdb.Do("LRANGE", fmt.Sprintf("user_memo_list:%d", user.Id), 0, -1))
+	defer radix.Put(rdb)
+	memoIds, err := rdb.Cmd("LRANGE", fmt.Sprintf("user_memo_list:%d", user.Id), 0, -1).List()
 	if err != nil {
 		serverError(w, err)
 		return
@@ -590,13 +596,13 @@ func memoHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		key = fmt.Sprintf("user_public_memo_list:%d", memo.User)
 	}
-	rdb, err := connectRedis()
-	defer rdb.Close()
+	rdb, err := radix.Get()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	memoIds, err := redis.Strings(rdb.Do("LRANGE", key, 0, -1))
+	defer radix.Put(rdb)
+	memoIds, err := rdb.Cmd("LRANGE", key, 0, -1).List()
 	if err != nil {
 		serverError(w, err)
 		return
@@ -677,18 +683,23 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newId, _ := result.LastInsertId()
-	rdb, err := connectRedis()
+	rdb, err := radix.Get()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	rdb.Send("MULTI")
-	rdb.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
-	if isPrivate == 0 {
-		rdb.Send("LPUSH", "public_memo_list", newId)
-		rdb.Send("RPUSH", fmt.Sprintf("user_public_memo_list:%d", user.Id), newId)
+	defer radix.Put(rdb)
+	_, err = rdb.Cmd("MULTI").Bool()
+	if err != nil {
+		serverError(w, err)
+		return
 	}
-	_, err = rdb.Do("EXEC")
+	rdb.Cmd("RPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
+	if isPrivate == 0 {
+		rdb.Cmd("LPUSH", "public_memo_list", newId)
+		rdb.Cmd("RPUSH", fmt.Sprintf("user_public_memo_list:%d", user.Id), newId)
+	}
+	_, err = rdb.Cmd("EXEC").Bool()
 	if err != nil {
 		fmt.Errorf(err.Error())
 	}
@@ -696,22 +707,18 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, fmt.Sprintf("/memo/%d", newId), http.StatusFound)
 }
 
-func connectRedis() (redis.Conn, error) {
-	c, err := redis.Dial("tcp", ":6379")
-	return c, err
-}
-
 func migrateToRedis() error {
-	r, err := connectRedis()
+	rdb, err := radix.Get()
 	if err != nil {
 		panic(err)
 	}
+	defer radix.Put(rdb)
 	dbConn := <-dbConnPool
 	defer func() {
 		dbConnPool <- dbConn
 	}()
 
-	_, err = r.Do("FLUSHDB")
+	_, err = rdb.Cmd("FLUSHDB").Bool()
 	if err != nil {
 		fmt.Errorf(err.Error())
 	}
@@ -719,7 +726,10 @@ func migrateToRedis() error {
 	if err != nil {
 		return err
 	}
-	r.Send("MULTI")
+	_, err = rdb.Cmd("MULTI").Bool()
+	if err != nil {
+		fmt.Errorf(err.Error())
+	}
 	for rows.Next() {
 		memo := Memo{}
 		err = rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
@@ -727,13 +737,13 @@ func migrateToRedis() error {
 			fmt.Errorf(err.Error())
 		}
 		if memo.IsPrivate == 0 {
-			r.Send("LPUSH", "public_memo_list", memo.Id)
-			r.Send("RPUSH", fmt.Sprintf("user_public_memo_list:%d", memo.User), memo.Id)
+			rdb.Cmd("LPUSH", "public_memo_list", memo.Id)
+			rdb.Cmd("RPUSH", fmt.Sprintf("user_public_memo_list:%d", memo.User), memo.Id)
 		}
-		r.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
+		rdb.Cmd("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
 		go cacheHTML(memo.Content)
 	}
-	_, err = r.Do("EXEC")
+	_, err = rdb.Cmd("EXEC").Bool()
 	if err != nil {
 		fmt.Errorf(err.Error())
 	}
