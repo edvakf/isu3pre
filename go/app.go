@@ -142,6 +142,7 @@ func main() {
 	r.HandleFunc("/memo/{memo_id}", memoHandler).Methods("GET", "HEAD")
 	r.HandleFunc("/memo", memoPostHandler).Methods("POST")
 	r.HandleFunc("/recent/{page:[0-9]+}", recentHandler)
+	r.HandleFunc("/init", initHandler)
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./public/")))
 	http.Handle("/", r)
 
@@ -368,6 +369,10 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	if err = tmpl.ExecuteTemplate(w, "index", v); err != nil {
 		serverError(w, err)
 	}
+}
+
+func initHandler(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("ok"))
 }
 
 func signinHandler(w http.ResponseWriter, r *http.Request) {
