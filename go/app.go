@@ -326,8 +326,10 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	var totalCount int
 	x, found := gocache.Get("public_memo_count")
 	if found {
+		// fmt.Println("HIT")
 		totalCount = x.(int)
 	} else {
+		// fmt.Println("NO HIT")
 		rows, err := dbConn.Query("SELECT count(*) AS c FROM memos WHERE is_private=0")
 		if err != nil {
 			serverError(w, err)
@@ -372,6 +374,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func initHandler(w http.ResponseWriter, r *http.Request) {
+	gocache.Flush()
 	w.Write([]byte("ok"))
 }
 
