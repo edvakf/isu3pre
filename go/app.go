@@ -1,24 +1,29 @@
 package main
 
 import (
-	"./sessions"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/gorilla/mux"
-	"github.com/gorilla/securecookie"
 	"html/template"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
+
+	"./sessions"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/gorilla/mux"
+	"github.com/gorilla/securecookie"
 )
 
 const (
@@ -110,6 +115,8 @@ var (
 	tmpl = template.Must(template.New("tmpl").Funcs(fmap).ParseGlob("templates/*.html"))
 )
 
+var port = flag.Uint("port", 0, "port to listen")
+
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -146,7 +153,34 @@ func main() {
 	r.HandleFunc("/recent/{page:[0-9]+}", recentHandler)
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./public/")))
 	http.Handle("/", r)
-	log.Fatal(http.ListenAndServe(listenAddr, nil))
+
+	sigchan := make(chan os.Signal)
+	signal.Notify(sigchan, os.Interrupt)
+	signal.Notify(sigchan, syscall.SIGTERM)
+	signal.Notify(sigchan, syscall.SIGINT)
+
+	var l net.Listener
+	var err error
+	if *port == 0 {
+		ferr := os.Remove("/tmp/server.sock")
+		if ferr != nil {
+			if !os.IsNotExist(ferr) {
+				panic(ferr.Error())
+			}
+		}
+		l, err = net.Listen("unix", "/tmp/server.sock")
+		os.Chmod("/tmp/server.sock", 0777)
+	} else {
+		l, err = net.ListenTCP("tcp", &net.TCPAddr{Port: int(*port)})
+	}
+	if err != nil {
+		panic(err.Error())
+	}
+	go func() {
+		log.Println(http.Serve(l, nil))
+	}()
+
+	<-sigchan
 }
 
 func loadConfig(filename string) *Config {
