@@ -688,10 +688,10 @@ func lookupMemoMulti(dbConn *sql.DB, memoIds []string) (Memos, error) {
 	placeHolder := "0"
 	args := []interface{}{}
 	for _, id := range memoIds {
-		placeHolder += ",?"
+		placeHolder += "," + id
 		args = append(args, id)
 	}
-	rows, err := dbConn.Query("SELECT * FROM memos WHERE id IN ("+placeHolder+")", args...)
+	rows, err := dbConn.Query("SELECT * FROM memos WHERE id IN (" + placeHolder + ")")
 	defer rows.Close()
 	if err != nil {
 		return memos, err
@@ -722,10 +722,10 @@ func lookupUserNameMulti(dbConn *sql.DB, userIds []int) (map[int]string, error) 
 	placeHolder := "0"
 	args := []interface{}{}
 	for _, id := range userIds {
-		placeHolder += ",?"
+		placeHolder += fmt.Sprintf(",%d", id)
 		args = append(args, id)
 	}
-	rows, err := dbConn.Query("SELECT id, username FROM users WHERE id IN ("+placeHolder+")", args...)
+	rows, err := dbConn.Query("SELECT id, username FROM users WHERE id IN (" + placeHolder + ")")
 	if err != nil {
 		return usernameOf, err
 	}
