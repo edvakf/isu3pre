@@ -688,6 +688,7 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fmt.Errorf(err.Error())
 	}
+	cacheHTML(r.FormValue("content"))
 	http.Redirect(w, r, fmt.Sprintf("/memo/%d", newId), http.StatusFound)
 }
 
