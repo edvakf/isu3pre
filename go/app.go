@@ -35,7 +35,7 @@ const (
 	sessionName        = "isucon_session"
 	tmpDir             = "/tmp/"
 	dbConnPoolSize     = 10
-	memcachedServer    = "localhost:11211"
+	memcachedServer    = "localhost:11212"
 	sessionSecret      = "kH<{11qpic*gf0e21YK7YtwyUvE9l<1r>yX8R-Op"
 )
 
