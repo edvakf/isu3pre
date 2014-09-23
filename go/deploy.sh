@@ -1,4 +1,4 @@
-#!/bin/bash -e -t
+#!/bin/bash -e -x
 export SSH_KEYFILE="${SSH_KEYFILE:-$HOME/tmp/isucon-catatsuy.pem}"
 export SSH_SERVER=isucon@54.64.143.220
 export RSYNC_RSH="ssh -i $SSH_KEYFILE"
