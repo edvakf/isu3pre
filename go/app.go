@@ -519,16 +519,21 @@ func mypageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	rows, err := dbConn.Query("SELECT id, content, is_private, created_at, updated_at FROM memos WHERE user=? ORDER BY created_at DESC", user.Id)
+	rdb, err := connectRedis()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	memos := make(Memos, 0)
-	for rows.Next() {
-		memo := Memo{}
-		rows.Scan(&memo.Id, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
-		memos = append(memos, &memo)
+	defer rdb.Close()
+	memoIds, err := redis.Strings(rdb.Do("LRANGE", fmt.Sprintf("user_memo_list:%d", user.Id), 0, -1))
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	memos, err := lookupMemoMulti(dbConn, memoIds)
+	if err != nil {
+		serverError(w, err)
+		return
 	}
 	v := &View{
 		Memos:   &memos,
@@ -710,7 +715,7 @@ func migrateToRedis() error {
 			if memo.IsPrivate == 0 {
 				r.Send("LPUSH", "public_memo_list", memo.Id)
 			}
-			r.Send("LPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
+			r.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
 			rowsCount++
 		}
 		_, err = r.Do("EXEC")
