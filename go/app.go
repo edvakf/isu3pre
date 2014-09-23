@@ -18,11 +18,13 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"./sessions"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/securecookie"
+	goCache "github.com/pmylund/go-cache"
 	"github.com/russross/blackfriday"
 )
 
@@ -103,6 +105,7 @@ var (
 )
 
 var port = flag.Uint("port", 0, "port to listen")
+var gocache = goCache.New(30*time.Second, 10*time.Second)
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
@@ -314,21 +317,26 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	page, _ := strconv.Atoi(vars["page"])
 
-	rows, err := dbConn.Query("SELECT count(*) AS c FROM memos WHERE is_private=0")
+	rows, err := dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", memosPerPage, memosPerPage*page)
 	if err != nil {
 		serverError(w, err)
 		return
 	}
 	var totalCount int
-	if rows.Next() {
-		rows.Scan(&totalCount)
-	}
-	rows.Close()
-
-	rows, err = dbConn.Query("SELECT * FROM memos WHERE is_private=0 ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", memosPerPage, memosPerPage*page)
-	if err != nil {
-		serverError(w, err)
-		return
+	x, found := gocache.Get("public_memo_count")
+	if found {
+		totalCount = x.(int)
+	} else {
+		rows, err := dbConn.Query("SELECT count(*) AS c FROM memos WHERE is_private=0")
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		if rows.Next() {
+			rows.Scan(&totalCount)
+		}
+		rows.Close()
+		gocache.Set("public_memo_count", totalCount, 1*time.Second)
 	}
 	memos := make(Memos, 0)
 	stmtUser, err := dbConn.Prepare("SELECT username FROM users WHERE id=?")
