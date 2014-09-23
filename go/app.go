@@ -264,6 +264,7 @@ func topHandler(w http.ResponseWriter, r *http.Request) {
 
 	var totalCount int
 	rdb, err := connectRedis()
+	defer rdb.Close()
 	if err != nil {
 		serverError(w, err)
 		return
@@ -279,7 +280,7 @@ func topHandler(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	memos, err := lookupMemoMulti(memoIds)
+	memos, err := lookupMemoMulti(dbConn, memoIds)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -324,7 +325,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	memos, err := lookupMemoMulti(memoIds)
+	memos, err := lookupMemoMulti(dbConn, memoIds)
 	if err != nil {
 		serverError(w, err)
 		return
@@ -682,12 +683,8 @@ func migrateToRedis() error {
 	return nil
 }
 
-func lookupMemoMulti(memoIds []string) (Memos, error) {
+func lookupMemoMulti(dbConn *sql.DB, memoIds []string) (Memos, error) {
 	memos := make(Memos, 0)
-	dbConn := <-dbConnPool
-	defer func() {
-		dbConnPool <- dbConn
-	}()
 	placeHolder := "0"
 	args := []interface{}{}
 	for _, id := range memoIds {
@@ -700,21 +697,14 @@ func lookupMemoMulti(memoIds []string) (Memos, error) {
 		return memos, err
 	}
 
-	stmtUser, err := dbConn.Prepare("SELECT username FROM users WHERE id=?")
-	defer stmtUser.Close()
-	if err != nil {
-		return memos, err
-	}
-
 	userIds := []int{}
 	for rows.Next() {
 		memo := Memo{}
 		rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
 		userIds = append(userIds, memo.User)
-		stmtUser.QueryRow(memo.User).Scan(&memo.Username)
 		memos = append(memos, &memo)
 	}
-	usernameOf, err := lookupUserNameMulti(userIds)
+	usernameOf, err := lookupUserNameMulti(dbConn, userIds)
 	if err != nil {
 		return memos, nil
 	}
@@ -726,11 +716,7 @@ func lookupMemoMulti(memoIds []string) (Memos, error) {
 	return memos, nil
 }
 
-func lookupUserNameMulti(userIds []int) (map[int]string, error) {
-	dbConn := <-dbConnPool
-	defer func() {
-		dbConnPool <- dbConn
-	}()
+func lookupUserNameMulti(dbConn *sql.DB, userIds []int) (map[int]string, error) {
 
 	usernameOf := map[int]string{}
 	placeHolder := "0"
