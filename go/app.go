@@ -680,7 +680,7 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rdb.Send("MULTI")
-	rdb.Send("LPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
+	rdb.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
 	if isPrivate == 0 {
 		rdb.Send("LPUSH", "public_memo_list", newId)
 	}
@@ -774,13 +774,22 @@ func lookupMemoMulti(dbConn *sql.DB, memoIds []string) (Memos, error) {
 		return memos, err
 	}
 
+	memberOf := make(map[string]Memo, 1000)
 	for rows.Next() {
 		memo := Memo{}
 		rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
 		memo.Username = getUserName(memo.User)
 		memos = append(memos, &memo)
+		memberOf[fmt.Sprintf("%d", memo.Id)] = memo
 	}
-	return memos, nil
+
+	results := make(Memos, 0)
+	for _, id := range memoIds {
+		if v, found := memberOf[id]; found {
+			results = append(results, &v)
+		}
+	}
+	return results, nil
 }
 
 func lookupUserNameMulti(dbConn *sql.DB, userIds []int) (map[int]string, error) {
