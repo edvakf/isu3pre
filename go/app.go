@@ -376,21 +376,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 func initHandler(w http.ResponseWriter, r *http.Request) {
 	gocache.Flush()
 
-	initPublicMemos()
-
 	w.Write([]byte("ok"))
-}
-
-func initPublicMemos() {
-	dbConn := <-dbConnPool
-	defer func() {
-		dbConnPool <- dbConn
-	}()
-
-	log.Printf("initializing public_memos")
-	dbConn.Exec("DROP TABLE IF EXISTS public_memos")
-	dbConn.Exec("CREATE TABLE public_memos LIKE memos")
-	dbConn.Exec("INSERT INTO public_memos SELECT * FROM memos WHERE is_private=0 ORDER BY id ASC")
 }
 
 func signinHandler(w http.ResponseWriter, r *http.Request) {
