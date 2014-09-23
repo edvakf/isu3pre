@@ -1,24 +1,25 @@
 package main
 
 import (
-	"./sessions"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/gorilla/mux"
-	"github.com/gorilla/securecookie"
 	"html/template"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+
+	"./sessions"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/gorilla/mux"
+	"github.com/gorilla/securecookie"
+	"github.com/russross/blackfriday"
 )
 
 const (
@@ -27,7 +28,6 @@ const (
 	listenAddr         = ":5000"
 	sessionName        = "isucon_session"
 	tmpDir             = "/tmp/"
-	markdownCommand    = "../bin/markdown"
 	dbConnPoolSize     = 10
 	memcachedServer    = "localhost:11211"
 	sessionSecret      = "kH<{11qpic*gf0e21YK7YtwyUvE9l<1r>yX8R-Op"
@@ -91,19 +91,7 @@ var (
 			return session.Values["token"]
 		},
 		"gen_markdown": func(s string) template.HTML {
-			f, _ := ioutil.TempFile(tmpDir, "isucon")
-			defer f.Close()
-			f.WriteString(s)
-			f.Sync()
-			finfo, _ := f.Stat()
-			path := tmpDir + finfo.Name()
-			defer os.Remove(path)
-			cmd := exec.Command(markdownCommand, path)
-			out, err := cmd.Output()
-			if err != nil {
-				log.Printf("can't exec markdown command: %v", err)
-				return ""
-			}
+			out := blackfriday.MarkdownCommon([]byte(s))
 			return template.HTML(out)
 		},
 	}
