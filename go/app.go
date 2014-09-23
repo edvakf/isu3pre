@@ -140,10 +140,6 @@ func main() {
 		defer conn.Close()
 	}
 
-	err := migrateToRedis()
-	if err != nil {
-		panic(err)
-	}
 	r := mux.NewRouter()
 	r.HandleFunc("/", topHandler)
 	r.HandleFunc("/signin", signinHandler).Methods("GET", "HEAD")
@@ -163,7 +159,7 @@ func main() {
 	signal.Notify(sigchan, syscall.SIGINT)
 
 	var l net.Listener
-	// var err error
+	var err error
 	if *port == 0 {
 		ferr := os.Remove("/tmp/server.sock")
 		if ferr != nil {
@@ -587,24 +583,38 @@ func memoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	memo.Username = getUserName(memo.User)
 
-	var cond string
-	if user != nil && user.Id == memo.User {
-		cond = ""
-	} else {
-		cond = "AND is_private=0"
-	}
-	rows, err = dbConn.Query("SELECT id, content, is_private, created_at, updated_at FROM memos WHERE user=? "+cond+" ORDER BY created_at", memo.User)
-	if err != nil {
-		serverError(w, err)
-		return
-	}
 	memos := make(Memos, 0)
-	for rows.Next() {
-		m := Memo{}
-		rows.Scan(&m.Id, &m.Content, &m.IsPrivate, &m.CreatedAt, &m.UpdatedAt)
-		memos = append(memos, &m)
+	if user != nil && user.Id == memo.User {
+		rdb, err := connectRedis()
+		defer rdb.Close()
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		memoIds, err := redis.Strings(rdb.Do("LRANGE", fmt.Sprintf("user_memo_list:%d", user.Id), 0, -1))
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		memos, err = lookupMemoMulti(dbConn, memoIds)
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+	} else {
+		cond := "AND is_private=0"
+		rows, err = dbConn.Query("SELECT id, content, is_private, created_at, updated_at FROM memos WHERE user=? "+cond+" ORDER BY created_at", memo.User)
+		if err != nil {
+			serverError(w, err)
+			return
+		}
+		for rows.Next() {
+			m := Memo{}
+			rows.Scan(&m.Id, &m.Content, &m.IsPrivate, &m.CreatedAt, &m.UpdatedAt)
+			memos = append(memos, &m)
+		}
+		rows.Close()
 	}
-	rows.Close()
 	var older *Memo
 	var newer *Memo
 	for i, m := range memos {
