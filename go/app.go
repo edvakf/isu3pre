@@ -23,7 +23,8 @@ import (
 	"time"
 
 	"./sessions"
-	"github.com/garyburd/redigo/redis"
+	redispool "github.com/fzzy/radix/extra/pool"
+	"github.com/fzzy/radix/redis"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/securecookie"
@@ -113,10 +114,17 @@ var (
 
 var port = flag.Uint("port", 0, "port to listen")
 var gocache = goCache.New(30*time.Second, 10*time.Second)
+var redisPool *redispool.Pool
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	flag.Parse()
+
+	var err error
+	redisPool, err = redispool.NewPool("tcp", ":6379", 1000)
+	if err != nil {
+		panic(err)
+	}
 
 	env := os.Getenv("ISUCON_ENV")
 	if env == "" {
@@ -159,7 +167,6 @@ func main() {
 	signal.Notify(sigchan, syscall.SIGINT)
 
 	var l net.Listener
-	var err error
 	if *port == 0 {
 		ferr := os.Remove("/tmp/server.sock")
 		if ferr != nil {
@@ -266,21 +273,25 @@ func topHandler(w http.ResponseWriter, r *http.Request) {
 	user := getUser(w, r, dbConn, session)
 
 	var totalCount int
-	rdb, err := connectRedis()
-	defer rdb.Close()
+	rdb, err := redisPool.Get()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
+	defer redisPool.Put(rdb)
 
-	memoIds, err := redis.Strings(rdb.Do("LRANGE", "public_memo_list", 0, memosPerPage-1))
+	memoIds, err := rdb.Cmd("LRANGE", "public_memo_list", 0, memosPerPage-1).List()
+	if err != nil {
+		serverError(w, err)
+		return
+	}
 	x, found := gocache.Get("public_memo_count")
 	if found {
 		// fmt.Println("HIT")
 		totalCount = x.(int)
 	} else {
 		// fmt.Println("NO HIT")
-		totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
+		totalCount, err = rdb.Cmd("LLEN", "public_memo_list").Int()
 		if err != nil {
 			serverError(w, err)
 			return
@@ -322,13 +333,13 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	page, _ := strconv.Atoi(vars["page"])
 
-	rdb, err := connectRedis()
+	rdb, err := redisPool.Get()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	defer rdb.Close()
-	memoIds, err := redis.Strings(rdb.Do("LRANGE", "public_memo_list", memosPerPage*page, memosPerPage*(page+1)-1))
+	defer redisPool.Put(rdb)
+	memoIds, err := rdb.Cmd("LRANGE", "public_memo_list", memosPerPage*page, memosPerPage*(page+1)-1).List()
 	if err != nil {
 		serverError(w, err)
 		return
@@ -345,7 +356,7 @@ func recentHandler(w http.ResponseWriter, r *http.Request) {
 		// fmt.Println("HIT")
 		totalCount = x.(int)
 	} else {
-		totalCount, err = redis.Int(rdb.Do("LLEN", "public_memo_list"))
+		totalCount, err = rdb.Cmd("LLEN", "public_memo_count").Int()
 		if err != nil {
 			serverError(w, err)
 		}
@@ -521,13 +532,13 @@ func mypageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	rdb, err := connectRedis()
+	rdb, err := redisPool.Get()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	defer rdb.Close()
-	memoIds, err := redis.Strings(rdb.Do("LRANGE", fmt.Sprintf("user_memo_list:%d", user.Id), 0, -1))
+	defer redisPool.Put(rdb)
+	memoIds, err := rdb.Cmd("LRANGE", fmt.Sprintf("user_memo_list:%d", user.Id), 0, -1).List()
 	if err != nil {
 		serverError(w, err)
 		return
@@ -585,13 +596,13 @@ func memoHandler(w http.ResponseWriter, r *http.Request) {
 
 	memos := make(Memos, 0)
 	if user != nil && user.Id == memo.User {
-		rdb, err := connectRedis()
-		defer rdb.Close()
+		rdb, err := redisPool.Get()
 		if err != nil {
 			serverError(w, err)
 			return
 		}
-		memoIds, err := redis.Strings(rdb.Do("LRANGE", fmt.Sprintf("user_memo_list:%d", user.Id), 0, -1))
+		defer redisPool.Put(rdb)
+		memoIds, err := rdb.Cmd("LRANGE", fmt.Sprintf("user_memo_list:%d", user.Id), 0, -1).List()
 		if err != nil {
 			serverError(w, err)
 			return
@@ -676,63 +687,68 @@ func memoPostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newId, _ := result.LastInsertId()
-	rdb, err := connectRedis()
+	rdb, err := redisPool.Get()
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	rdb.Send("MULTI")
-	rdb.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
+	defer redisPool.Put(rdb)
+	rdb.Append("RPUSH", fmt.Sprintf("user_memo_list:%d", user.Id), newId)
 	if isPrivate == 0 {
-		rdb.Send("LPUSH", "public_memo_list", newId)
-		rdb.Send("LPUSH", fmt.Sprintf("user_public_memo_list:%d", user.Id), newId)
+		rdb.Append("LPUSH", "public_memo_list", newId)
+		rdb.Append("LPUSH", fmt.Sprintf("user_public_memo_list:%d", user.Id), newId)
 	}
-	_, err = rdb.Do("EXEC")
-	if err != nil {
+	res := rdb.GetReply()
+	if res.Err != nil {
 		fmt.Errorf(err.Error())
 	}
 	cacheHTML(r.FormValue("content"))
 	http.Redirect(w, r, fmt.Sprintf("/memo/%d", newId), http.StatusFound)
 }
 
-func connectRedis() (redis.Conn, error) {
-	c, err := redis.Dial("tcp", ":6379")
-	return c, err
-}
-
 func migrateToRedis() error {
-	r, err := connectRedis()
+	rdb, err := redisPool.Get()
 	if err != nil {
-		panic(err)
+		return err
 	}
+	defer redisPool.Put(rdb)
+
 	dbConn := <-dbConnPool
 	defer func() {
 		dbConnPool <- dbConn
 	}()
 
 	cursor := 0
-	r.Do("FLUSHDB")
+	_, err = rdb.Cmd("FLUSHDB").Bool()
+	if err != nil {
+		return err
+	}
 	for {
 		rows, err := dbConn.Query("SELECT * FROM memos WHERE id > ? ORDER BY id ASC LIMIT 2000", cursor)
 		if err != nil {
 			return err
 		}
-		r.Send("MULTI")
 		rowsCount := 0
 		for rows.Next() {
 			memo := Memo{}
 			rows.Scan(&memo.Id, &memo.User, &memo.Content, &memo.IsPrivate, &memo.CreatedAt, &memo.UpdatedAt)
 			if memo.IsPrivate == 0 {
-				r.Send("LPUSH", "public_memo_list", memo.Id)
-				r.Send("RPUSH", fmt.Sprintf("user_public_memo_list:%d", memo.User), memo.Id)
+				rdb.Append("LPUSH", "public_memo_list", memo.Id)
+				rdb.Append("RPUSH", fmt.Sprintf("user_public_memo_list:%d", memo.User), memo.Id)
 			}
-			r.Send("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
+			rdb.Append("RPUSH", fmt.Sprintf("user_memo_list:%d", memo.User), memo.Id)
 			rowsCount++
 			go cacheHTML(memo.Content)
 		}
-		_, err = r.Do("EXEC")
-		if err != nil {
-			fmt.Errorf(err.Error())
+		for {
+			_, err = rdb.GetReply().Bool()
+			if err != nil {
+				if err == redis.PipelineQueueEmptyError {
+					break
+				} else {
+					return err
+				}
+			}
 		}
 		if rowsCount < 1000 {
 			break
